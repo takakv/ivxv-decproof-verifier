@@ -1,17 +1,15 @@
-use std::cmp::Ordering;
-use std::fs;
-use std::ops::Shr;
+use std::{cmp::Ordering, fs, ops::Shr};
 
-use base64::{engine::general_purpose, Engine};
-use der::asn1::OctetStringRef;
-use der::{
-    asn1::{AnyRef, BitStringRef, ObjectIdentifier, UintRef, Utf8StringRef},
-    Decode, Encode, Sequence,
-};
-use rug::integer::Order;
-use rug::Integer;
+use base64::{Engine, engine::general_purpose};
+use der::{asn1::{OctetStringRef, Utf8StringRef}, Decode, Encode};
+use rug::{Integer, integer::Order};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+use asn1_structs::{DecryptionProof, ElGamalParamsIVXV, ElGamalPublicKey,
+                   EncryptedBallot, ProofSeed, SubjectPublicKeyInfo};
+
+mod asn1_structs;
 
 const BYTE_ORDER: Order = Order::Msf;
 
@@ -29,66 +27,11 @@ struct DecryptionProofs {
     proofs: Vec<ProofPackage>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct AlgorithmIdentifier<'a> {
-    pub algorithm: ObjectIdentifier,
-    pub parameters: Option<AnyRef<'a>>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct ElGamalParamsIVXV<'a> {
-    pub p: UintRef<'a>,
-    pub g: UintRef<'a>,
-    pub election_identifier: Utf8StringRef<'a>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct ElGamalPublicKey<'a> {
-    pub h: UintRef<'a>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct SubjectPublicKeyInfo<'a> {
-    pub algorithm: AlgorithmIdentifier<'a>,
-    pub subject_public_key: BitStringRef<'a>,
-}
-
 pub struct PublicKey {
     pub p: Integer,
     pub q: Integer,
     pub g: Integer,
     pub h: Integer,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct ElGamalEncryptedMessage<'a> {
-    pub u: UintRef<'a>,
-    pub v: UintRef<'a>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct EncryptedBallot<'a> {
-    pub algorithm: AlgorithmIdentifier<'a>,
-    pub cipher: ElGamalEncryptedMessage<'a>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct DecryptionProof<'a> {
-    pub msg_commitment: UintRef<'a>,
-    pub key_commitment: UintRef<'a>,
-    pub response: UintRef<'a>,
-    pub intermediate_k: Option<UintRef<'a>>,
-    pub intermediate_seed: Option<UintRef<'a>>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct ProofSeed<'a> {
-    pub ni_proof_domain: Utf8StringRef<'a>,
-    pub public_key: SubjectPublicKeyInfo<'a>,
-    pub ciphertext: EncryptedBallot<'a>,
-    pub decrypted: OctetStringRef<'a>,
-    pub msg_commitment: UintRef<'a>,
-    pub key_commitment: UintRef<'a>,
 }
 
 fn bytes_to_int(b: &[u8]) -> Integer {
