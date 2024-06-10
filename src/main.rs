@@ -139,7 +139,7 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     return lhs2.eq(&rhs2);
 }
 
-fn parse_pubkey(pubkey_bin: &Vec<u8>) -> PublicKey {
+fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
     let spki: SubjectPublicKeyInfo = rasn::der::decode(pubkey_bin).unwrap();
     let encapsulated_pk_bin = spki.subject_public_key.as_raw_slice();
     let params_bin = spki.algorithm.parameters.clone().unwrap().into_bytes();
@@ -161,8 +161,9 @@ fn parse_pubkey(pubkey_bin: &Vec<u8>) -> PublicKey {
 
 #[tokio::main]
 async fn main() {
-    let pubkey_der_bin = fs::read("EP_2024-pub.der").expect("Unable to read from file");
-    let pubkey = parse_pubkey(&pubkey_der_bin);
+    let pubkey_pem_bin = fs::read("EP_2024-pub.pem").expect("Unable to read from file");
+    let pubkey_pem = pem::parse(pubkey_pem_bin).unwrap();
+    let pubkey = parse_pubkey(pubkey_pem.contents());
 
     let proofs_json_str: String =
         fs::read_to_string("./EP_2024-proof").expect("Unable to read from file");
