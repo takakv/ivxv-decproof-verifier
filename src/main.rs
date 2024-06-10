@@ -35,10 +35,10 @@ struct DecryptionProofs {
 
 #[derive(Clone)]
 pub struct PublicKey {
-    pub p: rug::Integer,
-    pub q: rug::Integer,
-    pub g: rug::Integer,
-    pub h: rug::Integer,
+    pub p: asn1::integer::Integer,
+    pub q: asn1::integer::Integer,
+    pub g: asn1::integer::Integer,
+    pub h: asn1::integer::Integer,
     pub spki: SubjectPublicKeyInfo,
 }
 
@@ -113,11 +113,11 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     let seed = derive_seed(&pubkey.spki, &ciphertext_asn1, &message_bin, &proof_asn1);
     let k = compute_challenge(&seed, pubkey.q.clone());
 
-    let u = rasn_to_rug(ciphertext_asn1.cipher.u);
-    let v = rasn_to_rug(ciphertext_asn1.cipher.v);
-    let a = rasn_to_rug(proof_asn1.msg_commitment);
-    let b = rasn_to_rug(proof_asn1.key_commitment);
-    let s = rasn_to_rug(proof_asn1.response);
+    let u = ciphertext_asn1.cipher.u;
+    let v = ciphertext_asn1.cipher.v;
+    let a = proof_asn1.msg_commitment;
+    let b = proof_asn1.key_commitment;
+    let s = proof_asn1.response;
     let mut m = bytes_to_int(&message_bin);
 
     // By Euler, m is a QR if m^q = 1 (mod p).
@@ -147,12 +147,11 @@ fn parse_pubkey(pubkey_bin: &Vec<u8>) -> PublicKey {
     let params: ElGamalParamsIVXV = rasn::der::decode(&params_bin).unwrap();
     let pkref: ElGamalPublicKey = rasn::der::decode(encapsulated_pk_bin).unwrap();
 
-    let pub_mod = rasn_to_rug(params.p);
     let pubkey = PublicKey {
-        p: pub_mod.clone(),
-        q: rug::Integer::from(pub_mod - 1).shr(1),
-        g: rasn_to_rug(params.g),
-        h: rasn_to_rug(pkref.h),
+        p: params.p.clone(),
+        q: (params.p - 1).shr(1),
+        g: params.g,
+        h: pkref.h,
         spki,
     };
 
