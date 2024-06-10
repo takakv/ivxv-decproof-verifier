@@ -171,7 +171,7 @@ async fn main() {
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut handles = Vec::new();
+    let mut handles = vec![];
 
     for package in proofs_json.proofs {
         let pubkey = pubkey.clone();
