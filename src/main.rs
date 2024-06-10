@@ -5,7 +5,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine};
-use rug::integer::Order;
+use rug::{integer::Order, Integer};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -35,19 +35,19 @@ struct DecryptionProofs {
 
 #[derive(Clone)]
 pub struct PublicKey {
-    pub p: rug::Integer,
-    pub q: rug::Integer,
-    pub g: rug::Integer,
-    pub h: rug::Integer,
+    pub p: Integer,
+    pub q: Integer,
+    pub g: Integer,
+    pub h: Integer,
     pub spki: SubjectPublicKeyInfo,
 }
 
-fn bytes_to_int(b: &[u8]) -> rug::Integer {
-    return rug::Integer::from_digits(b, BYTE_ORDER);
+fn bytes_to_int(b: &[u8]) -> Integer {
+    return Integer::from_digits(b, BYTE_ORDER);
 }
 
-fn rasn_to_rug(i: rasn::types::Integer) -> rug::Integer {
-    return rug::Integer::from_digits(i.to_signed_bytes_be().deref(), BYTE_ORDER);
+fn asn1int_to_int(i: rasn::types::Integer) -> Integer {
+    return Integer::from_digits(i.to_signed_bytes_be().deref(), BYTE_ORDER);
 }
 
 fn b64decode(s: String) -> Vec<u8> {
@@ -73,7 +73,7 @@ fn derive_seed(
     return rasn::der::encode(&ni_proof).unwrap();
 }
 
-fn compute_challenge(seed: &Vec<u8>, ub: rug::Integer) -> rug::Integer {
+fn compute_challenge(seed: &Vec<u8>, ub: &Integer) -> Integer {
     let mut counter: u64 = 1;
 
     loop {
@@ -96,7 +96,7 @@ fn compute_challenge(seed: &Vec<u8>, ub: rug::Integer) -> rug::Integer {
         }
 
         let num = bytes_to_int(&hash_bytes);
-        if num.cmp(&ub) == Ordering::Less {
+        if num.cmp(ub) == Ordering::Less {
             return num;
         }
     }
@@ -111,18 +111,18 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     let proof_asn1: DecryptionProof = rasn::der::decode(&proof_bin).unwrap();
 
     let seed = derive_seed(&pubkey.spki, &ciphertext_asn1, &message_bin, &proof_asn1);
-    let k = compute_challenge(&seed, pubkey.q.clone());
+    let k = compute_challenge(&seed, &pubkey.q);
 
-    let u = rasn_to_rug(ciphertext_asn1.cipher.u);
-    let v = rasn_to_rug(ciphertext_asn1.cipher.v);
-    let a = rasn_to_rug(proof_asn1.msg_commitment);
-    let b = rasn_to_rug(proof_asn1.key_commitment);
-    let s = rasn_to_rug(proof_asn1.response);
+    let u = asn1int_to_int(ciphertext_asn1.cipher.u);
+    let v = asn1int_to_int(ciphertext_asn1.cipher.v);
+    let a = asn1int_to_int(proof_asn1.msg_commitment);
+    let b = asn1int_to_int(proof_asn1.key_commitment);
+    let s = asn1int_to_int(proof_asn1.response);
     let mut m = bytes_to_int(&message_bin);
 
     // By Euler, m is a QR if m^q = 1 (mod p).
     let e = m.clone().pow_mod(&pubkey.q, &pubkey.p).unwrap();
-    if e.cmp(rug::Integer::ONE) != Ordering::Equal {
+    if e.cmp(Integer::ONE) != Ordering::Equal {
         m = &pubkey.p - m;
     }
     let m_inv = m.invert(&pubkey.p).unwrap();
@@ -147,12 +147,12 @@ fn parse_pubkey(pubkey_bin: &Vec<u8>) -> PublicKey {
     let params: ElGamalParamsIVXV = rasn::der::decode(&params_bin).unwrap();
     let pkref: ElGamalPublicKey = rasn::der::decode(encapsulated_pk_bin).unwrap();
 
-    let pub_mod = rasn_to_rug(params.p);
+    let pub_mod = asn1int_to_int(params.p);
     let pubkey = PublicKey {
         p: pub_mod.clone(),
-        q: rug::Integer::from(pub_mod - 1).shr(1),
-        g: rasn_to_rug(params.g),
-        h: rasn_to_rug(pkref.h),
+        q: Integer::from(pub_mod - 1).shr(1),
+        g: asn1int_to_int(params.g),
+        h: asn1int_to_int(pkref.h),
         spki,
     };
 
