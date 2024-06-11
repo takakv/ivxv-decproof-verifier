@@ -61,8 +61,7 @@ fn derive_seed(
     dp: &DecryptionProof,
 ) -> Vec<u8> {
     let ni_proof = ProofSeed {
-        ni_proof_domain: rasn::types::GeneralString::try_from(String::from("DECRYPTION"))
-            .expect("failed to create GeneralString"),
+        ni_proof_domain: rasn::types::GeneralString::try_from(String::from("DECRYPTION")).unwrap(),
         public_key: spki.clone(),
         ciphertext: eb.clone(),
         decrypted: rasn::types::OctetString::from(dec.clone()),
@@ -113,6 +112,7 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     let seed = derive_seed(&pubkey.spki, &ciphertext_asn1, &message_bin, &proof_asn1);
     let k = compute_challenge(&seed, &pubkey.q);
 
+    // Convert between arbitrary precision integer types for performance.
     let u = asn1int_to_int(ciphertext_asn1.cipher.u);
     let v = asn1int_to_int(ciphertext_asn1.cipher.v);
     let a = asn1int_to_int(proof_asn1.msg_commitment);
@@ -147,6 +147,7 @@ fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
     let params: ElGamalParamsIVXV = rasn::der::decode(&params_bin).unwrap();
     let pkref: ElGamalPublicKey = rasn::der::decode(encapsulated_pk_bin).unwrap();
 
+    // Convert between arbitrary precision integer types for performance.
     let pub_mod = asn1int_to_int(params.p);
     let pubkey = PublicKey {
         p: pub_mod.clone(),
