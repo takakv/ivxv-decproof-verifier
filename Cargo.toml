@@ -13,3 +13,4 @@ rasn = "0.15.0"
 tokio = { version = "1.38.0", features = ["full", "net"] }
 futures = "0.3.30"
 pem = "3.0.4"
+der = { version="0.7.9", features = ["oid", "derive", "alloc"] }

@@ -1,60 +1,57 @@
-use rasn::{AsnType, Decode, Encode, types::*};
+use der::{
+    asn1::{Any, BitStringRef, ObjectIdentifier, OctetStringRef, UintRef, Uint, Utf8StringRef},
+    Sequence,
+};
 
-#[derive(AsnType, Clone, Decode, Encode)]
+#[derive(Clone, Debug, Eq, PartialEq, Sequence)]
 pub struct AlgorithmIdentifier {
     pub algorithm: ObjectIdentifier,
     pub parameters: Option<Any>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
+#[derive(Clone, Debug, Eq, PartialEq, Sequence)]
 pub struct ElGamalParamsIVXV {
-    pub p: Integer,
-    pub g: Integer,
-    pub election_identifier: GeneralString,
+    pub p: Uint,
+    pub g: Uint,
+    pub election_identifier: Utf8StringRef<'static>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
+#[derive(Clone, Debug, Eq, PartialEq, Sequence)]
 pub struct ElGamalPublicKey {
-    pub h: Integer,
+    pub h: Uint,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct SubjectPublicKeyInfo {
-    pub algorithm: AlgorithmIdentifier,
-    pub subject_public_key: BitString,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct SubjectPublicKeyInfo<'a> {
+    pub algorithm: AlgorithmIdentifier<'a>,
+    pub subject_public_key: BitStringRef<'a>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct ElGamalEncryptedMessage {
-    pub u: Integer,
-    pub v: Integer,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct ElGamalEncryptedMessage<'a> {
+    pub u: UintRef<'a>,
+    pub v: UintRef<'a>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct EncryptedBallot {
-    pub algorithm: AlgorithmIdentifier,
-    pub cipher: ElGamalEncryptedMessage,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct EncryptedBallot<'a> {
+    pub algorithm: AlgorithmIdentifier<'a>,
+    pub cipher: ElGamalEncryptedMessage<'a>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct DecryptionProof {
-    pub msg_commitment: Integer,
-    pub key_commitment: Integer,
-    pub response: Integer,
-    // These are not part of the proof in practice.
-    // The specification does not specify explicit tags either.
-    // #[rasn(tag(0))]
-    // pub intermediate_k: Option<Integer>,
-    // #[rasn(tag(1))]
-    // pub intermediate_seed: Option<Integer>,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct DecryptionProof<'a> {
+    pub msg_commitment: UintRef<'a>,
+    pub key_commitment: UintRef<'a>,
+    pub response: UintRef<'a>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct ProofSeed {
-    pub ni_proof_domain: GeneralString,
-    pub public_key: SubjectPublicKeyInfo,
-    pub ciphertext: EncryptedBallot,
-    pub decrypted: OctetString,
-    pub msg_commitment: Integer,
-    pub key_commitment: Integer,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct ProofSeed<'a> {
+    pub ni_proof_domain: Utf8StringRef<'a>,
+    pub public_key: SubjectPublicKeyInfo<'a>,
+    pub ciphertext: EncryptedBallot<'a>,
+    pub decrypted: OctetStringRef<'a>,
+    pub msg_commitment: UintRef<'a>,
+    pub key_commitment: UintRef<'a>,
 }
