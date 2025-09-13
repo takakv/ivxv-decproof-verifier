@@ -5,7 +5,7 @@ use p384::{
     elliptic_curve::{
         bigint::Encoding,
         sec1::{FromEncodedPoint, ToEncodedPoint},
-        Curve,
+        Curve, PrimeField,
     },
     EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
 };
@@ -19,6 +19,8 @@ use asn1::structs::{
 };
 
 mod asn1;
+
+const NUM_BYTES: usize = (Scalar::NUM_BITS / 8) as usize;
 
 #[derive(Deserialize)]
 struct ProofPackage {
@@ -47,8 +49,19 @@ fn asn1int_to_scalar(i: rasn::types::Integer) -> Scalar {
     // We know that the bytes are unsigned.
     // However, if the first bit is set, i.to_unsigned_bytes_be() will prepend a 0-byte.
     // This will cause Scalar::from_slice() to panic due to an incompatible length.
+    // There is also a small probability that there are 8 or more leading 0-bits.
     let (bytes, len) = i.to_unsigned_bytes_be();
-    Scalar::from_slice(&bytes.as_ref()[len - 48..]).unwrap()
+    let slice = bytes.as_ref();
+
+    match len.cmp(&NUM_BYTES) {
+        std::cmp::Ordering::Equal => Scalar::from_slice(slice).unwrap(),
+        std::cmp::Ordering::Greater => Scalar::from_slice(&slice[1..]).unwrap(),
+        std::cmp::Ordering::Less => {
+            let mut buf = [0u8; NUM_BYTES];
+            buf[NUM_BYTES - len..].copy_from_slice(&slice[..len]);
+            Scalar::from_slice(&buf).unwrap()
+        }
+    }
 }
 
 fn der_to_point(octets: &[u8]) -> ProjectivePoint {
@@ -84,9 +97,8 @@ fn derive_seed(
 }
 
 fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
-    const BOUND_SIZE: usize = 48; // The group size of P-384 takes 48 bytes.
     const BLOCK_LEN: usize = 32; // SHA-256 has a digest size of 32 bytes.
-    const BUFFER_CAPACITY: usize = 2; // No more than ceil(BOUND_SIZE/BLOCK_LEN) are needed for the buffer.
+    const BUFFER_CAPACITY: usize = (NUM_BYTES + BLOCK_LEN - 1) / BLOCK_LEN; // ceil(NUM_BYTES / BLOCK_LEN)
 
     let mut counter: u64 = 0;
     let mut buffer = Vec::with_capacity(BUFFER_CAPACITY);
@@ -95,7 +107,7 @@ fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
     while num >= upper_bound {
         // Minimum number of hashes needed to meet the required byte-count.
         // ceil(BOUND_SIZE - buffer.len() / BLOCK_LEN)
-        let blocks_needed: usize = (BOUND_SIZE - buffer.len() + BLOCK_LEN - 1) / BLOCK_LEN;
+        let blocks_needed: usize = (NUM_BYTES - buffer.len() + BLOCK_LEN - 1) / BLOCK_LEN;
 
         for _ in 0..blocks_needed {
             counter += 1;
@@ -106,8 +118,8 @@ fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
             buffer.extend_from_slice(&digest);
         }
 
-        num = bytes_to_int(&buffer[..BOUND_SIZE]);
-        buffer.drain(..BOUND_SIZE);
+        num = bytes_to_int(&buffer[..NUM_BYTES]);
+        buffer.drain(..NUM_BYTES);
     }
 
     Scalar::from_slice(&num.to_be_bytes()).unwrap()
