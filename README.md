@@ -16,3 +16,11 @@ Unfortunately, the proofs are not currently published on the [elections website]
 
 Alternatively, if you want to obtain dummy data to test this tool or validate your own,
 you can use the [ivxv-dummygen](https://github.com/takakv/ivxv-dummygen) Python tool (also written by me).
+
+Useful links about IVXV:
+
+- [Source code](https://github.com/valimised/ivxv/tree/published/auditor) of the official IVXV auditing application.
+- [Documents](https://www.valimised.ee/en/internet-voting/documents-about-internet-voting) about internet voting.
+  Most are in Estonian, but some are available in English.
+- [Information](https://www.valimised.ee/en/internet-voting/observing-auditing-testing) about observing, auditing and
+  testing.
