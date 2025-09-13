@@ -1,4 +1,4 @@
-use rasn::{AsnType, Decode, Encode, types::*};
+use rasn::{types::*, AsnType, Decode, Encode};
 
 #[derive(AsnType, Clone, Decode, Encode)]
 pub struct AlgorithmIdentifier {
@@ -7,15 +7,14 @@ pub struct AlgorithmIdentifier {
 }
 
 #[derive(AsnType, Clone, Decode, Encode)]
-pub struct ElGamalParamsIVXV {
-    pub p: Integer,
-    pub g: Integer,
+pub struct IVXVPublicKeyParams {
+    pub curve_name: GeneralString,
     pub election_identifier: GeneralString,
 }
 
 #[derive(AsnType, Clone, Decode, Encode)]
-pub struct ElGamalPublicKey {
-    pub h: Integer,
+pub struct ECPublicKey {
+    pub ec_point: OctetString,
 }
 
 #[derive(AsnType, Clone, Decode, Encode)]
@@ -26,8 +25,8 @@ pub struct SubjectPublicKeyInfo {
 
 #[derive(AsnType, Clone, Decode, Encode)]
 pub struct ElGamalEncryptedMessage {
-    pub u: Integer,
-    pub v: Integer,
+    pub u: OctetString,
+    pub v: OctetString,
 }
 
 #[derive(AsnType, Clone, Decode, Encode)]
@@ -38,8 +37,8 @@ pub struct EncryptedBallot {
 
 #[derive(AsnType, Clone, Decode, Encode)]
 pub struct DecryptionProof {
-    pub msg_commitment: Integer,
-    pub key_commitment: Integer,
+    pub msg_commitment: OctetString,
+    pub key_commitment: OctetString,
     pub response: Integer,
     // These are not part of the proof in practice.
     // The specification does not specify explicit tags either.
@@ -55,6 +54,6 @@ pub struct ProofSeed {
     pub public_key: SubjectPublicKeyInfo,
     pub ciphertext: EncryptedBallot,
     pub decrypted: OctetString,
-    pub msg_commitment: Integer,
-    pub key_commitment: Integer,
+    pub msg_commitment: OctetString,
+    pub key_commitment: OctetString,
 }

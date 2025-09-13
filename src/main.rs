@@ -1,23 +1,24 @@
-use std::{
-    cmp::Ordering,
-    fs,
-    ops::{Deref, Shr},
-};
+use std::{fs, ops::Deref};
 
 use base64::{engine::general_purpose, Engine};
-use rug::{integer::Order, Integer};
+use p384::{
+    elliptic_curve::{
+        bigint::Encoding,
+        sec1::{FromEncodedPoint, ToEncodedPoint},
+        Curve,
+    },
+    EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
+};
+use rasn::types::OctetString;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use sha2::{digest::Update, Digest, Sha256};
 use tokio::sync::mpsc;
 
 use asn1::structs::{
-    DecryptionProof, ElGamalParamsIVXV, ElGamalPublicKey, EncryptedBallot, ProofSeed,
-    SubjectPublicKeyInfo,
+    DecryptionProof, ECPublicKey, EncryptedBallot, ProofSeed, SubjectPublicKeyInfo,
 };
 
 mod asn1;
-
-const BYTE_ORDER: Order = Order::Msf;
 
 #[derive(Deserialize)]
 struct ProofPackage {
@@ -35,19 +36,30 @@ struct DecryptionProofs {
 
 #[derive(Clone)]
 pub struct PublicKey {
-    pub p: Integer,
-    pub q: Integer,
-    pub g: Integer,
-    pub h: Integer,
+    pub point: ProjectivePoint,
     pub spki: SubjectPublicKeyInfo,
 }
 
-fn bytes_to_int(b: &[u8]) -> Integer {
-    return Integer::from_digits(b, BYTE_ORDER);
+fn bytes_to_int(b: &[u8]) -> U384 {
+    U384::from_be_slice(b)
 }
 
-fn asn1int_to_int(i: rasn::types::Integer) -> Integer {
-    return Integer::from_digits(i.to_signed_bytes_be().deref(), BYTE_ORDER);
+fn asn1int_to_scalar(i: rasn::types::Integer) -> Scalar {
+    // We know that the bytes are unsigned.
+    // However, if the first bit is set, i.to_signed_bytes_be() will prepend a 0-byte.
+    // This will cause Scalar::from_slice() to panic due to an incompatible length.
+    let tmp = i.to_bytes_be();
+    Scalar::from_slice(tmp.1.deref()).unwrap()
+}
+
+fn der_to_point(octets: &[u8]) -> ProjectivePoint {
+    let point: OctetString = rasn::der::decode(octets).unwrap();
+    octets_to_point(&point)
+}
+
+fn octets_to_point(octets: &[u8]) -> ProjectivePoint {
+    let encoded = EncodedPoint::from_bytes(octets).unwrap();
+    ProjectivePoint::from_encoded_point(&encoded).unwrap()
 }
 
 fn b64decode(s: String) -> Vec<u8> {
@@ -69,36 +81,37 @@ fn derive_seed(
         key_commitment: dp.key_commitment.clone(),
     };
 
-    return rasn::der::encode(&ni_proof).unwrap();
+    rasn::der::encode(&ni_proof).unwrap()
 }
 
-fn compute_challenge(seed: &Vec<u8>, ub: &Integer) -> Integer {
-    let mut counter: u64 = 1;
+fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
+    const BOUND_SIZE: usize = 48; // The group size of P-384 takes 48 bytes.
+    const BLOCK_LEN: usize = 32; // SHA-256 has a digest size of 32 bytes.
+    const BUFFER_CAPACITY: usize = 2; // No more than ceil(BOUND_SIZE/BLOCK_LEN) are needed for the buffer.
 
-    loop {
-        let mut hash_bytes: Vec<u8> = vec![];
+    let mut counter: u64 = 0;
+    let mut buffer = Vec::with_capacity(BUFFER_CAPACITY);
+    let mut num = upper_bound;
 
-        // SHA256 has a digest size of 32 bytes.
-        // 12 * (32 * 8) = 3072
-        for _ in 1..=12 {
-            let mut in_bytes: Vec<u8> = vec![];
-            in_bytes.extend_from_slice(&counter.to_be_bytes());
-            in_bytes.extend(seed);
+    while num >= upper_bound {
+        // Minimum number of hashes needed to meet the required byte-count.
+        // ceil(BOUND_SIZE - buffer.len() / BLOCK_LEN)
+        let blocks_needed: usize = (BOUND_SIZE - buffer.len() + BLOCK_LEN - 1) / BLOCK_LEN;
 
-            let hash = Sha256::digest(&in_bytes);
-            hash_bytes.extend(hash.as_slice());
+        for _ in 0..blocks_needed {
             counter += 1;
+            let digest = Sha256::new()
+                .chain(counter.to_be_bytes())
+                .chain(seed)
+                .finalize();
+            buffer.extend_from_slice(&digest);
         }
 
-        if hash_bytes[0] >= 128 {
-            hash_bytes[0] -= 128
-        }
-
-        let num = bytes_to_int(&hash_bytes);
-        if num.cmp(ub) == Ordering::Less {
-            return num;
-        }
+        num = bytes_to_int(&buffer[..BOUND_SIZE]);
+        buffer.drain(..BOUND_SIZE);
     }
+
+    Scalar::from_slice(&num.to_be_bytes()).unwrap()
 }
 
 fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
@@ -109,65 +122,61 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     let ciphertext_asn1: EncryptedBallot = rasn::der::decode(&ciphertext_bin).unwrap();
     let proof_asn1: DecryptionProof = rasn::der::decode(&proof_bin).unwrap();
 
-    let seed = derive_seed(&pubkey.spki, &ciphertext_asn1, &message_bin, &proof_asn1);
-    let k = compute_challenge(&seed, &pubkey.q);
+    let decrypted = der_to_point(&message_bin);
+    let decrypted_bin = decrypted.to_encoded_point(false);
 
-    // Convert between arbitrary precision integer types for performance.
-    let u = asn1int_to_int(ciphertext_asn1.cipher.u);
-    let v = asn1int_to_int(ciphertext_asn1.cipher.v);
-    let a = asn1int_to_int(proof_asn1.msg_commitment);
-    let b = asn1int_to_int(proof_asn1.key_commitment);
-    let s = asn1int_to_int(proof_asn1.response);
-    let mut m = bytes_to_int(&message_bin);
+    let seed = derive_seed(
+        &pubkey.spki,
+        &ciphertext_asn1,
+        &decrypted_bin.as_bytes().to_vec(),
+        &proof_asn1,
+    );
 
-    // By Euler, m is a QR if m^q = 1 (mod p).
-    let e = m.clone().pow_mod(&pubkey.q, &pubkey.p).unwrap();
-    if e.cmp(Integer::ONE) != Ordering::Equal {
-        m = &pubkey.p - m;
-    }
-    let m_inv = m.invert(&pubkey.p).unwrap();
+    let k = compute_challenge(&seed, NistP384::ORDER);
 
-    let lhs1 = u.pow_mod(&s, &pubkey.p).unwrap();
-    let rhs1 = (a * (v * m_inv).pow_mod(&k, &pubkey.p).unwrap()) % &pubkey.p;
+    let u = octets_to_point(&ciphertext_asn1.cipher.u);
+    let v = octets_to_point(&ciphertext_asn1.cipher.v);
+    let a = octets_to_point(&proof_asn1.msg_commitment);
+    let b = octets_to_point(&proof_asn1.key_commitment);
+    let s = asn1int_to_scalar(proof_asn1.response);
+
+    let lhs1 = u * s;
+    let rhs1 = a + (v - decrypted) * k;
 
     if !lhs1.eq(&rhs1) {
         return false;
     }
 
-    let lhs2 = &pubkey.g.pow_mod(&s, &pubkey.p).unwrap();
-    let rhs2 = (b * &pubkey.h.pow_mod(&k, &pubkey.p).unwrap()) % &pubkey.p;
-    return lhs2.eq(&rhs2);
+    let lhs2 = ProjectivePoint::GENERATOR * s;
+    let rhs2 = b + pubkey.point * k;
+
+    lhs2.eq(&rhs2)
 }
 
 fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
     let spki: SubjectPublicKeyInfo = rasn::der::decode(pubkey_bin).unwrap();
     let encapsulated_pk_bin = spki.subject_public_key.as_raw_slice();
-    let params_bin = spki.algorithm.parameters.clone().unwrap().into_bytes();
+    // let params_bin = spki.algorithm.parameters.clone().unwrap().into_bytes();
 
-    let params: ElGamalParamsIVXV = rasn::der::decode(&params_bin).unwrap();
-    let pkref: ElGamalPublicKey = rasn::der::decode(encapsulated_pk_bin).unwrap();
+    // let params: IVXVPublicKeyParams = rasn::der::decode(&params_bin).unwrap();
+    let pkref: ECPublicKey = rasn::der::decode(encapsulated_pk_bin).unwrap();
 
-    // Convert between arbitrary precision integer types for performance.
-    let pub_mod = asn1int_to_int(params.p);
-    let pubkey = PublicKey {
-        p: pub_mod.clone(),
-        q: Integer::from(pub_mod - 1).shr(1),
-        g: asn1int_to_int(params.g),
-        h: asn1int_to_int(pkref.h),
+    PublicKey {
+        point: octets_to_point(&pkref.ec_point),
         spki,
-    };
-
-    return pubkey;
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let pubkey_pem_bin = fs::read("EP_2024-pub.pem").expect("Unable to read from file");
+    const ELECTION_ID: &str = "DUMMYGEN_01";
+    let pubkey_pem_bin =
+        fs::read(format!("{ELECTION_ID}-pub.pem")).expect("Unable to read from file");
     let pubkey_pem = pem::parse(pubkey_pem_bin).unwrap();
     let pubkey = parse_pubkey(pubkey_pem.contents());
 
     let proofs_json_str: String =
-        fs::read_to_string("./EP_2024-proof").expect("Unable to read from file");
+        fs::read_to_string(format!("{ELECTION_ID}-proof")).expect("Unable to read from file");
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
 
