@@ -1,4 +1,4 @@
-use std::{fs, ops::Deref};
+use std::fs;
 
 use base64::{engine::general_purpose, Engine};
 use p384::{
@@ -9,7 +9,7 @@ use p384::{
     },
     EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
 };
-use rasn::types::OctetString;
+use rasn::types::{IntegerType, OctetString};
 use serde::Deserialize;
 use sha2::{digest::Update, Digest, Sha256};
 use tokio::sync::mpsc;
@@ -29,7 +29,6 @@ struct ProofPackage {
 
 #[derive(Deserialize)]
 struct DecryptionProofs {
-    #[allow(dead_code)]
     election: String,
     proofs: Vec<ProofPackage>,
 }
@@ -46,10 +45,10 @@ fn bytes_to_int(b: &[u8]) -> U384 {
 
 fn asn1int_to_scalar(i: rasn::types::Integer) -> Scalar {
     // We know that the bytes are unsigned.
-    // However, if the first bit is set, i.to_signed_bytes_be() will prepend a 0-byte.
+    // However, if the first bit is set, i.to_unsigned_bytes_be() will prepend a 0-byte.
     // This will cause Scalar::from_slice() to panic due to an incompatible length.
-    let tmp = i.to_bytes_be();
-    Scalar::from_slice(tmp.1.deref()).unwrap()
+    let (bytes, len) = i.to_unsigned_bytes_be();
+    Scalar::from_slice(&bytes.as_ref()[len - 48..]).unwrap()
 }
 
 fn der_to_point(octets: &[u8]) -> ProjectivePoint {
@@ -179,6 +178,12 @@ async fn main() {
         fs::read_to_string(format!("{ELECTION_ID}-proof")).expect("Unable to read from file");
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
+
+    println!(
+        "Verifying proofs of correct decryption for election: '{}'.",
+        proofs_json.election
+    );
+    println!();
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut handles = vec![];

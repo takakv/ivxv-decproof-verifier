@@ -1,4 +1,4 @@
-use rasn::{types::*, AsnType, Decode, Encode};
+use rasn::{types::*, AsnType, Decode, Decoder, Encode};
 
 #[derive(AsnType, Clone, Decode, Encode)]
 pub struct AlgorithmIdentifier {
@@ -6,11 +6,11 @@ pub struct AlgorithmIdentifier {
     pub parameters: Option<Any>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct IVXVPublicKeyParams {
-    pub curve_name: GeneralString,
-    pub election_identifier: GeneralString,
-}
+// #[derive(AsnType, Clone, Decode, Encode)]
+// pub struct IVXVPublicKeyParams {
+//     pub curve_name: GeneralString,
+//     pub election_identifier: GeneralString,
+// }
 
 #[derive(AsnType, Clone, Decode, Encode)]
 pub struct ECPublicKey {
