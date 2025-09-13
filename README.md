@@ -32,14 +32,14 @@ Let $n$ denote the order of the curve, and let $G$ be its base point.
 
 ### El Gamal
 
-The ElGamal secret key $x \stackrel{u}{\gets} \lbrace 1, \dots, n\rbrace$ is sampled uniformly at random
+The ElGamal secret key $x \stackrel{u}{\gets} \lbrace 1, \dots, n - 1\rbrace$ is sampled uniformly at random
 and the public key is computed as $H \gets xG$.
 
 - A message (encoded to a point) $M$ is encrypted as
   
   $$\mathsf{Enc}_H(m; r) = (rG, M + rH) \stackrel{\mathsf{def}}{=}(U, V)$$
 
-  where $r \stackrel{u}{\gets} \lbrace 1, \dots, n\rbrace$ is the ephemeral encryption randomness.
+  where $r \stackrel{u}{\gets} \lbrace 1, \dots, n - 1\rbrace$ is the ephemeral encryption randomness.
 - A ciphertext $(U, V)$ is decrypted as
 
   $$\mathsf{Dec}_x((U, V)) = V - xU = M.$$
@@ -69,7 +69,7 @@ If the Chaum-Pedersen transcript is accepting for
 - the public key $H$ and generator $G$,
 
 then by soundness of the protocol, the prover knows $x$ such that $H = xG$ and $V - M' = xU$.
-Using the abelian group property,
+Since $U = rG$, it follows that
 
 $$V - M' = xU = x(rG) = r(xG) = rH = V - M \implies M = M'.$$
 
@@ -77,3 +77,28 @@ It follows that the ciphertext was:
 
 - decrypted with the secret key corresponding to the public key $H$,
 - the claimed decryption result is indeed correct.
+
+The interactive protocol itself is as follows:
+
+1. The prover computes
+
+   $$t \stackrel{u}{\gets} \lbrace 0, \dots, n - 1\rbrace,\quad A \gets tU,\quad B \gets tG$$
+
+   and sends the commitments $A, B$ to the verifier.
+   In IVXV, $A$ is called the ‘message commitment’ and $B$ the ‘key commitment’.
+
+2. The verifier samples the challenge $k \stackrel{u}{\gets} \lbrace 0, \dots, n - 1\rbrace$ uniformly at random
+   and sends it to the prover.
+
+3. The prover computes the response
+
+   $$s \gets t + kx \pmod{n}$$
+
+   and sends it to the verifier.
+
+The proof transcript is $\bigl((A, B), k, s\bigr)$.
+
+To verify the proof, the verifier must verify that
+
+$$sU = A + k(V - M) \quad\land\quad sG = B + kH.$$
+
