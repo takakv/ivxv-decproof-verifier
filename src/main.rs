@@ -1,6 +1,7 @@
-use std::fs;
+use std::{fs, time::Instant};
 
 use base64::{engine::general_purpose, Engine};
+use indicatif::{ProgressBar, ProgressStyle};
 use p384::{
     elliptic_curve::{
         bigint::Encoding,
@@ -10,6 +11,7 @@ use p384::{
     EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
 };
 use rasn::types::{IntegerType, OctetString};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::Deserialize;
 use sha2::{digest::Update, Digest, Sha256};
 use tokio::sync::mpsc;
@@ -106,7 +108,7 @@ fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
 
     while num >= upper_bound {
         // Minimum number of hashes needed to meet the required byte-count.
-        // ceil(BOUND_SIZE - buffer.len() / BLOCK_LEN)
+        // ceil(NUM_BYTES - buffer.len() / BLOCK_LEN)
         let blocks_needed: usize = (NUM_BYTES - buffer.len() + BLOCK_LEN - 1) / BLOCK_LEN;
 
         for _ in 0..blocks_needed {
@@ -181,6 +183,7 @@ fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
 #[tokio::main]
 async fn main() {
     const ELECTION_ID: &str = "DUMMYGEN_01";
+
     let pubkey_pem_bin =
         fs::read(format!("{ELECTION_ID}-pub.pem")).expect("Unable to read from file");
     let pubkey_pem = pem::parse(pubkey_pem_bin).unwrap();
@@ -191,38 +194,46 @@ async fn main() {
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
 
+    let total = proofs_json.proofs.len() as u64;
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%)")
+            .expect("Invalid template")
+            .progress_chars("=>-"),
+    );
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    rayon::spawn(move || {
+        proofs_json.proofs.into_par_iter().for_each(|package| {
+            let result = verify_proof(package, pubkey.clone());
+            tx.send(result).unwrap();
+        });
+    });
+
+    let mut success_count: usize = 0;
+    let mut failure_count: usize = 0;
+
     println!(
         "Verifying proofs of correct decryption for election: '{}'.",
         proofs_json.election
     );
-    println!();
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut handles = vec![];
-
-    for package in proofs_json.proofs {
-        let pubkey = pubkey.clone();
-        let tx = tx.clone();
-
-        handles.push(tokio::spawn(async move {
-            tx.send(verify_proof(package, pubkey)).unwrap();
-        }));
-    }
-    drop(tx);
-
-    futures::future::join_all(handles).await;
-
-    let mut success_count = 0;
-    let mut failure_count = 0;
-
-    while let Some(msg) = rx.recv().await {
-        if msg {
+    let start = Instant::now();
+    while let Some(result) = rx.recv().await {
+        if result {
             success_count += 1;
         } else {
             failure_count += 1;
         }
+        pb.inc(1);
     }
 
+    let duration = start.elapsed();
+    pb.finish();
+
+    println!("\n");
     println!("Successful verifications: {}", success_count);
-    println!("Failed verifications    : {}", failure_count);
+    println!("Failed verifications. . : {}", failure_count);
+    println!("Verification took . . . : {:?}", duration);
 }
