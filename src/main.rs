@@ -1,4 +1,8 @@
-use std::{fs, time::Instant};
+use std::{
+    fs,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
+};
 
 use base64::{engine::general_purpose, Engine};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -14,7 +18,6 @@ use rasn::types::{IntegerType, OctetString};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::Deserialize;
 use sha2::{digest::Update, Digest, Sha256};
-use tokio::sync::mpsc;
 
 use asn1::structs::{
     DecryptionProof, ECPublicKey, EncryptedBallot, ProofSeed, SubjectPublicKeyInfo,
@@ -180,8 +183,7 @@ fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     const ELECTION_ID: &str = "DUMMYGEN_01";
 
     let pubkey_pem_bin =
@@ -189,7 +191,7 @@ async fn main() {
     let pubkey_pem = pem::parse(pubkey_pem_bin).unwrap();
     let pubkey = parse_pubkey(pubkey_pem.contents());
 
-    let proofs_json_str: String =
+    let proofs_json_str =
         fs::read_to_string(format!("{ELECTION_ID}-proof")).expect("Unable to read from file");
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
@@ -203,16 +205,8 @@ async fn main() {
             .progress_chars("=>-"),
     );
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    rayon::spawn(move || {
-        proofs_json.proofs.into_par_iter().for_each(|package| {
-            let result = verify_proof(package, pubkey.clone());
-            tx.send(result).unwrap();
-        });
-    });
-
-    let mut success_count: usize = 0;
-    let mut failure_count: usize = 0;
+    let success_count = AtomicUsize::new(0);
+    let failure_count = AtomicUsize::new(0);
 
     println!(
         "Verifying proofs of correct decryption for election: '{}'.",
@@ -220,20 +214,26 @@ async fn main() {
     );
 
     let start = Instant::now();
-    while let Some(result) = rx.recv().await {
-        if result {
-            success_count += 1;
+    proofs_json.proofs.into_par_iter().for_each(|package| {
+        if verify_proof(package, pubkey.clone()) {
+            success_count.fetch_add(1, Ordering::Relaxed);
         } else {
-            failure_count += 1;
+            failure_count.fetch_add(1, Ordering::Relaxed);
         }
         pb.inc(1);
-    }
-
-    let duration = start.elapsed();
+    });
     pb.finish();
 
+    let duration = start.elapsed();
+
     println!("\n");
-    println!("Successful verifications: {}", success_count);
-    println!("Failed verifications. . : {}", failure_count);
+    println!(
+        "Successful verifications: {}",
+        success_count.load(Ordering::Relaxed)
+    );
+    println!(
+        "Failed verifications. . : {}",
+        failure_count.load(Ordering::Relaxed)
+    );
     println!("Verification took . . . : {:?}", duration);
 }
