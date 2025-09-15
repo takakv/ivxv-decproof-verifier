@@ -1,6 +1,9 @@
 use std::{
     fs,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
     time::Instant,
 };
 
@@ -14,7 +17,7 @@ use p384::{
     },
     EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
 };
-use rasn::types::{IntegerType, OctetString};
+use rasn::types::{GeneralString, IntegerType, OctetString};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::Deserialize;
 use sha2::{digest::Update, Digest, Sha256};
@@ -40,7 +43,6 @@ struct DecryptionProofs {
     proofs: Vec<ProofPackage>,
 }
 
-#[derive(Clone)]
 pub struct PublicKey {
     pub point: ProjectivePoint,
     pub spki: SubjectPublicKeyInfo,
@@ -79,29 +81,35 @@ fn octets_to_point(octets: &[u8]) -> ProjectivePoint {
     ProjectivePoint::from_encoded_point(&encoded).unwrap()
 }
 
-fn b64decode(s: String) -> Vec<u8> {
-    return general_purpose::STANDARD.decode(s).unwrap();
+fn b64decode(s: &str) -> Vec<u8> {
+    general_purpose::STANDARD.decode(s).unwrap()
+}
+
+static NI_PROOF_DOMAIN: OnceLock<GeneralString> = OnceLock::new();
+
+fn ni_proof_domain() -> &'static GeneralString {
+    NI_PROOF_DOMAIN.get_or_init(|| GeneralString::try_from("DECRYPTION").unwrap())
 }
 
 fn derive_seed(
     spki: &SubjectPublicKeyInfo,
     eb: &EncryptedBallot,
-    dec: &Vec<u8>,
+    dec: &[u8],
     dp: &DecryptionProof,
 ) -> Vec<u8> {
     let ni_proof = ProofSeed {
-        ni_proof_domain: rasn::types::GeneralString::try_from(String::from("DECRYPTION")).unwrap(),
-        public_key: spki.clone(),
-        ciphertext: eb.clone(),
-        decrypted: rasn::types::OctetString::from(dec.clone()),
-        msg_commitment: dp.msg_commitment.clone(),
-        key_commitment: dp.key_commitment.clone(),
+        ni_proof_domain: ni_proof_domain(),
+        public_key: spki,
+        ciphertext: eb,
+        decrypted: &OctetString::from(dec),
+        msg_commitment: &dp.msg_commitment,
+        key_commitment: &dp.key_commitment,
     };
 
     rasn::der::encode(&ni_proof).unwrap()
 }
 
-fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
+fn compute_challenge(seed: &[u8], upper_bound: U384) -> Scalar {
     const BLOCK_LEN: usize = 32; // SHA-256 has a digest size of 32 bytes.
     const BUFFER_CAPACITY: usize = (NUM_BYTES + BLOCK_LEN - 1) / BLOCK_LEN; // ceil(NUM_BYTES / BLOCK_LEN)
 
@@ -130,10 +138,10 @@ fn compute_challenge(seed: &Vec<u8>, upper_bound: U384) -> Scalar {
     Scalar::from_slice(&num.to_be_bytes()).unwrap()
 }
 
-fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
-    let ciphertext_bin = b64decode(package.ciphertext);
-    let message_bin = b64decode(package.message);
-    let proof_bin = b64decode(package.proof);
+fn verify_proof(package: ProofPackage, pubkey: &PublicKey) -> bool {
+    let ciphertext_bin = b64decode(&package.ciphertext);
+    let message_bin = b64decode(&package.message);
+    let proof_bin = b64decode(&package.proof);
 
     let ciphertext_asn1: EncryptedBallot = rasn::der::decode(&ciphertext_bin).unwrap();
     let proof_asn1: DecryptionProof = rasn::der::decode(&proof_bin).unwrap();
@@ -144,7 +152,7 @@ fn verify_proof(package: ProofPackage, pubkey: PublicKey) -> bool {
     let seed = derive_seed(
         &pubkey.spki,
         &ciphertext_asn1,
-        &decrypted_bin.as_bytes().to_vec(),
+        &decrypted_bin.as_bytes(),
         &proof_asn1,
     );
 
@@ -215,7 +223,7 @@ fn main() {
 
     let start = Instant::now();
     proofs_json.proofs.into_par_iter().for_each(|package| {
-        if verify_proof(package, pubkey.clone()) {
+        if verify_proof(package, &pubkey) {
             success_count.fetch_add(1, Ordering::Relaxed);
         } else {
             failure_count.fetch_add(1, Ordering::Relaxed);

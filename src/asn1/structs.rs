@@ -48,12 +48,12 @@ pub struct DecryptionProof {
     // pub intermediate_seed: Option<Integer>,
 }
 
-#[derive(AsnType, Clone, Decode, Encode)]
-pub struct ProofSeed {
-    pub ni_proof_domain: GeneralString,
-    pub public_key: SubjectPublicKeyInfo,
-    pub ciphertext: EncryptedBallot,
-    pub decrypted: OctetString,
-    pub msg_commitment: OctetString,
-    pub key_commitment: OctetString,
+#[derive(AsnType, Encode)]
+pub struct ProofSeed<'a> {
+    pub ni_proof_domain: &'a GeneralString,
+    pub public_key: &'a SubjectPublicKeyInfo,
+    pub ciphertext: &'a EncryptedBallot,
+    pub decrypted: &'a OctetString,
+    pub msg_commitment: &'a OctetString,
+    pub key_commitment: &'a OctetString,
 }
