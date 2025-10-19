@@ -8,6 +8,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use p384::{
     elliptic_curve::{
@@ -29,6 +30,12 @@ use asn1::structs::{
 mod asn1;
 
 const NUM_BYTES: usize = (Scalar::NUM_BITS / 8) as usize;
+
+#[derive(Parser)]
+struct Args {
+    public_key: String,
+    proofs: String,
+}
 
 #[derive(Deserialize)]
 struct ProofPackage {
@@ -192,15 +199,14 @@ fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
 }
 
 fn main() {
-    const ELECTION_ID: &str = "DUMMYGEN_01";
+    let args = Args::parse();
 
-    let pubkey_pem_bin =
-        fs::read(format!("{ELECTION_ID}-pub.pem")).expect("Unable to read from file");
+    let pubkey_pem_bin = fs::read(&args.public_key).expect("Unable to read key from file");
     let pubkey_pem = pem::parse(pubkey_pem_bin).unwrap();
     let pubkey = parse_pubkey(pubkey_pem.contents());
 
     let proofs_json_str =
-        fs::read_to_string(format!("{ELECTION_ID}-proof")).expect("Unable to read from file");
+        fs::read_to_string(&args.proofs).expect("Unable to read proofs from file");
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
 
