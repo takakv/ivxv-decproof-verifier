@@ -25,6 +25,15 @@ Useful links about IVXV:
 - [Information](https://www.valimised.ee/en/internet-voting/observing-auditing-testing) about observing, auditing and
   testing.
 
+## Usage
+
+The tool requires the election public key and the decryption proof file.
+Example invocation:
+
+```
+decproof-verify ./DEMO-pub.pem ./DEMO-proof
+```
+
 ## ZKPoK of correct decryption
 
 IVXV uses the ElGamal cryptosystem with the [P-384](https://neuromancer.sk/std/nist/P-384) curve.
