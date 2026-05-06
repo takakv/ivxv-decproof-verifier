@@ -102,3 +102,21 @@ To verify the proof, the verifier must verify that
 
 $$sU = A + k(V - M) \quad\land\quad sG = B + kH.$$
 
+### Fiat-Shamir protocol
+
+Because the Chaum-Pedersen protocol is a public-coin Sigma protocol, it can be made non-interactive with the Fiat-Shamir heuristic.
+In IVXV, the Fiat-Shamir transformation is implemented with a function that internally uses a PRNG constructed from the SHA-256 cryptographic hash function.
+
+The PRNG seed consists of:
+
+- the string ‘DECRYPTION’
+- the public key
+- the ciphertext
+- the decrypted message
+- the message commitment
+- the key commitment
+
+IVXV uses the strong Fiat-Shamir transformation: the public parameters are part of the PRNG input.
+
+
+To verify the non-interactive proofs, the verifier must thus construct the seed for every proof.
