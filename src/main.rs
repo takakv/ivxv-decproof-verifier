@@ -1,52 +1,33 @@
 use std::{
     fs,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        OnceLock,
-    },
+    sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
 
 use base64::{engine::general_purpose, Engine};
 use clap::Parser;
+use der::Decode;
 use indicatif::{ProgressBar, ProgressStyle};
-use p384::{
-    elliptic_curve::{
-        bigint::Encoding,
-        sec1::{FromEncodedPoint, ToEncodedPoint},
-        Curve, PrimeField,
-    },
-    EncodedPoint, NistP384, ProjectivePoint, Scalar, U384,
+use ivxv::{
+    asn1::schemas::ElGamalCiphertextInfo,
+    election::ElectionPublicKey,
+    elgamal::Plaintext,
+    proofs::decryption::{DecryptionContext, DecryptionProof, DecryptionVerifyError},
+    ParseError,
 };
-use rasn::types::{GeneralString, IntegerType, OctetString};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use serde::Deserialize;
-use sha2::{digest::Update, Digest, Sha256};
-
-use asn1::structs::{
-    DecryptionProof, ECPublicKey, EncryptedBallot, ProofSeed, SubjectPublicKeyInfo,
-};
-
-mod asn1;
-
-const NUM_BYTES: usize = (Scalar::NUM_BITS / 8) as usize;
 
 #[derive(Debug, thiserror::Error)]
 enum ProofError {
     #[error("malformed base64: {0}")]
     MalformedBase64(#[from] base64::DecodeError),
 
-    #[error("malformed ASN.1: {0}")]
-    MalformedAsn1(#[from] rasn::error::DecodeError),
+    #[error(transparent)]
+    Parse(#[from] ParseError),
 
-    #[error("invalid point encoding")]
-    InvalidPointEncoding,
-
-    #[error("point is not on the curve")]
-    PointNotOnCurve,
-
-    #[error("scalar out of range")]
-    ScalarOutOfRange,
+    #[error(transparent)]
+    Verify(#[from] DecryptionVerifyError),
 }
 
 #[derive(Parser)]
@@ -68,167 +49,42 @@ struct DecryptionProofs {
     proofs: Vec<ProofPackage>,
 }
 
-pub struct PublicKey {
-    pub point: ProjectivePoint,
-    pub spki: SubjectPublicKeyInfo,
-}
-
-fn bytes_to_int(b: &[u8]) -> U384 {
-    U384::from_be_slice(b)
-}
-
-fn asn1int_to_scalar(i: rasn::types::Integer) -> Result<Scalar, ProofError> {
-    // We know that the bytes are unsigned.
-    // However, if the first bit is set, i.to_unsigned_bytes_be() will prepend a 0-byte.
-    // This will cause Scalar::from_slice() to fail due to an incompatible length.
-    // There is also a small probability that there are 8 or more leading 0-bits.
-    let (bytes, len) = i.to_unsigned_bytes_be();
-    let slice = bytes.as_ref();
-
-    Ok(match len.cmp(&NUM_BYTES) {
-        std::cmp::Ordering::Equal => Scalar::from_slice(slice),
-        std::cmp::Ordering::Greater => Scalar::from_slice(&slice[1..]),
-        std::cmp::Ordering::Less => {
-            let mut buf = [0u8; NUM_BYTES];
-            buf[NUM_BYTES - len..].copy_from_slice(&slice[..len]);
-            Scalar::from_slice(&buf)
-        }
-    }
-    .map_err(|_| ProofError::ScalarOutOfRange)?)
-}
-
-fn der_to_point(octets: &[u8]) -> Result<ProjectivePoint, ProofError> {
-    let point: OctetString = rasn::der::decode(octets)?;
-    octets_to_point(&point)
-}
-
-fn octets_to_point(octets: &[u8]) -> Result<ProjectivePoint, ProofError> {
-    let encoded = EncodedPoint::from_bytes(octets).map_err(|_| ProofError::InvalidPointEncoding)?;
-    ProjectivePoint::from_encoded_point(&encoded)
-        .into_option()
-        .ok_or(ProofError::PointNotOnCurve)
-}
-
 fn b64decode(s: &str) -> Result<Vec<u8>, ProofError> {
     Ok(general_purpose::STANDARD.decode(s)?)
 }
 
-static NI_PROOF_DOMAIN: OnceLock<GeneralString> = OnceLock::new();
+fn verify_proof(package: &ProofPackage, ctx: &DecryptionContext) -> Result<(), ProofError> {
+    let ciphertext = ElGamalCiphertextInfo::from_der(&b64decode(&package.ciphertext)?)
+        .map_err(ParseError::from)?;
+    let message = Plaintext::from_der(&b64decode(&package.message)?)?;
+    let proof = DecryptionProof::from_der(&b64decode(&package.proof)?)?;
 
-fn ni_proof_domain() -> &'static GeneralString {
-    NI_PROOF_DOMAIN.get_or_init(|| GeneralString::try_from("DECRYPTION").unwrap())
-}
-
-fn derive_seed(
-    spki: &SubjectPublicKeyInfo,
-    eb: &EncryptedBallot,
-    dec: &[u8],
-    dp: &DecryptionProof,
-) -> Vec<u8> {
-    let ni_proof = ProofSeed {
-        ni_proof_domain: ni_proof_domain(),
-        public_key: spki,
-        ciphertext: eb,
-        decrypted: &OctetString::from(dec),
-        msg_commitment: &dp.msg_commitment,
-        key_commitment: &dp.key_commitment,
-    };
-
-    rasn::der::encode(&ni_proof).unwrap()
-}
-
-fn compute_challenge(seed: &[u8], upper_bound: U384) -> Scalar {
-    const BLOCK_LEN: usize = 32; // SHA-256 has a digest size of 32 bytes.
-    const BUFFER_CAPACITY: usize = (NUM_BYTES + BLOCK_LEN - 1) / BLOCK_LEN; // ceil(NUM_BYTES / BLOCK_LEN)
-
-    let mut counter: u64 = 0;
-    let mut buffer = Vec::with_capacity(BUFFER_CAPACITY);
-    let mut num = upper_bound;
-
-    while num >= upper_bound {
-        // Minimum number of hashes needed to meet the required byte-count.
-        // ceil(NUM_BYTES - buffer.len() / BLOCK_LEN)
-        let blocks_needed: usize = (NUM_BYTES - buffer.len() + BLOCK_LEN - 1) / BLOCK_LEN;
-
-        for _ in 0..blocks_needed {
-            counter += 1;
-            let digest = Sha256::new()
-                .chain(counter.to_be_bytes())
-                .chain(seed)
-                .finalize();
-            buffer.extend_from_slice(&digest);
-        }
-
-        num = bytes_to_int(&buffer[..NUM_BYTES]);
-        buffer.drain(..NUM_BYTES);
-    }
-
-    Scalar::from_slice(&num.to_be_bytes()).unwrap()
-}
-
-fn verify_proof(package: ProofPackage, pubkey: &PublicKey) -> Result<bool, ProofError> {
-    let ciphertext_bin = b64decode(&package.ciphertext)?;
-    let message_bin = b64decode(&package.message)?;
-    let proof_bin = b64decode(&package.proof)?;
-
-    let ciphertext_asn1: EncryptedBallot = rasn::der::decode(&ciphertext_bin)?;
-    let proof_asn1: DecryptionProof = rasn::der::decode(&proof_bin)?;
-
-    let decrypted = der_to_point(&message_bin)?;
-    let decrypted_bin = decrypted.to_encoded_point(false);
-
-    let seed = derive_seed(
-        &pubkey.spki,
-        &ciphertext_asn1,
-        decrypted_bin.as_bytes(),
-        &proof_asn1,
-    );
-
-    let k = compute_challenge(&seed, NistP384::ORDER);
-
-    let u = octets_to_point(&ciphertext_asn1.cipher.u)?;
-    let v = octets_to_point(&ciphertext_asn1.cipher.v)?;
-    let a = octets_to_point(&proof_asn1.msg_commitment)?;
-    let b = octets_to_point(&proof_asn1.key_commitment)?;
-    let s = asn1int_to_scalar(proof_asn1.response)?;
-
-    let lhs1 = u * s;
-    let rhs1 = a + (v - decrypted) * k;
-
-    if !lhs1.eq(&rhs1) {
-        return Ok(false);
-    }
-
-    let lhs2 = ProjectivePoint::GENERATOR * s;
-    let rhs2 = b + pubkey.point * k;
-
-    Ok(lhs2.eq(&rhs2))
-}
-
-fn parse_pubkey(pubkey_bin: &[u8]) -> PublicKey {
-    let spki: SubjectPublicKeyInfo =
-        rasn::der::decode(pubkey_bin).expect("Unable to decode public key SPKI");
-    let encapsulated_pk_bin = spki.subject_public_key.as_raw_slice();
-    let pkref: ECPublicKey =
-        rasn::der::decode(encapsulated_pk_bin).expect("Unable to decode EC public key");
-
-    PublicKey {
-        point: octets_to_point(&pkref.ec_point).expect("Unable to decode public key point"),
-        spki,
-    }
+    Ok(ctx.verify(&ciphertext, &message, &proof)?)
 }
 
 fn main() {
     let args = Args::parse();
 
-    let pubkey_pem_bin = fs::read(&args.public_key).expect("Unable to read key from file");
-    let pubkey_pem = pem::parse(pubkey_pem_bin).expect("Unable to parse PEM file");
-    let pubkey = parse_pubkey(pubkey_pem.contents());
+    let pubkey_pem = fs::read_to_string(&args.public_key).expect("Unable to read key from file");
+    let pubkey = ElectionPublicKey::from_pem(&pubkey_pem).expect("Unable to parse public key");
 
     let proofs_json_str =
         fs::read_to_string(&args.proofs).expect("Unable to read proofs from file");
     let proofs_json: DecryptionProofs =
         serde_json::from_str(&proofs_json_str).expect("Unable to parse JSON");
+
+    println!(
+        "Verifying proofs of correct decryption for election: '{}'.",
+        proofs_json.election
+    );
+
+    if proofs_json.election != pubkey.election_id() {
+        println!(
+            "WARNING: the key is for election '{}', but the proofs claim '{}'.",
+            pubkey.election_id(),
+            proofs_json.election
+        );
+    }
 
     let total = proofs_json.proofs.len() as u64;
     let pb = ProgressBar::new(total);
@@ -239,13 +95,9 @@ fn main() {
             .progress_chars("=>-"),
     );
 
+    let ctx = DecryptionContext::new(&pubkey);
     let success_count = AtomicUsize::new(0);
     let failure_count = AtomicUsize::new(0);
-
-    println!(
-        "Verifying proofs of correct decryption for election: '{}'.",
-        proofs_json.election
-    );
 
     let start = Instant::now();
     proofs_json
@@ -253,12 +105,9 @@ fn main() {
         .into_par_iter()
         .enumerate()
         .for_each(|(i, package)| {
-            match verify_proof(package, &pubkey) {
-                Ok(true) => {
+            match verify_proof(&package, &ctx) {
+                Ok(()) => {
                     success_count.fetch_add(1, Ordering::Relaxed);
-                }
-                Ok(false) => {
-                    failure_count.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
                     failure_count.fetch_add(1, Ordering::Relaxed);
