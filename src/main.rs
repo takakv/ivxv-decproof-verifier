@@ -6,13 +6,10 @@ use std::{
 
 use base64::{engine::general_purpose, Engine};
 use clap::Parser;
-use der::Decode;
 use indicatif::{ProgressBar, ProgressStyle};
 use ivxv::{
-    asn1::schemas::ElGamalCiphertextInfo,
     election::ElectionPublicKey,
-    elgamal::Plaintext,
-    proofs::decryption::{DecryptionContext, DecryptionProof, DecryptionVerifyError},
+    proofs::decryption::{DecryptionContext, DecryptionVerifyError},
     ParseError,
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
@@ -54,12 +51,11 @@ fn b64decode(s: &str) -> Result<Vec<u8>, ProofError> {
 }
 
 fn verify_proof(package: &ProofPackage, ctx: &DecryptionContext) -> Result<(), ProofError> {
-    let ciphertext = ElGamalCiphertextInfo::from_der(&b64decode(&package.ciphertext)?)
-        .map_err(ParseError::from)?;
-    let message = Plaintext::from_der(&b64decode(&package.message)?)?;
-    let proof = DecryptionProof::from_der(&b64decode(&package.proof)?)?;
-
-    Ok(ctx.verify(&ciphertext, &message, &proof)?)
+    Ok(ctx.verify_der(
+        &b64decode(&package.ciphertext)?,
+        &b64decode(&package.message)?,
+        &b64decode(&package.proof)?,
+    )?)
 }
 
 fn main() {
